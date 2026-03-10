@@ -15,6 +15,8 @@ type Service interface {
 	Login(ctx context.Context, req domain.LoginRequest) (string, error)
 	Register(ctx context.Context, req domain.RegisterRequest) (int64, error)
 	Validate(ctx context.Context, tokenString string) (*domain.User, error)
+	// IssueToken 为指定用户签发 access_token（用于授权码换 token）
+	IssueToken(ctx context.Context, userID int64) (string, error)
 }
 
 type authService struct {
@@ -55,19 +57,30 @@ func (s *authService) Login(ctx context.Context, req domain.LoginRequest) (strin
 	return token, nil
 }
 
-// Register 处理用户注册逻辑 (简化版)
+// Register 处理用户注册逻辑
 func (s *authService) Register(ctx context.Context, req domain.RegisterRequest) (int64, error) {
+	if err := domain.ValidateRegisterRequest(req); err != nil {
+		return -1, err
+	}
 	// 检查用户是否已存在
 	isExist, err := s.repo.ExistsByEmail(ctx, req.Email)
 	if err != nil {
 		return -1, err
 	}
 	if isExist {
-		return -1, errors.New("user already exists")
+		return -1, domain.ErrEmailExists
 	}
-	hashedPassword, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	username := req.Username
+	if username == "" {
+		username = req.Email
+	}
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return -1, fmt.Errorf("password hash failed: %w", err)
+	}
 
 	newUser := &domain.User{
+		Username:     username,
 		Email:        req.Email,
 		PasswordHash: string(hashedPassword),
 		Role:         "standard",
@@ -93,4 +106,13 @@ func (s *authService) Validate(ctx context.Context, tokenString string) (*domain
 	}
 
 	return user, nil
+}
+
+// IssueToken 根据 userID 签发 JWT（用于授权码兑换 token）
+func (s *authService) IssueToken(ctx context.Context, userID int64) (string, error) {
+	user, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	return s.tokenService.GenerateToken(user.ID, user.Role)
 }
